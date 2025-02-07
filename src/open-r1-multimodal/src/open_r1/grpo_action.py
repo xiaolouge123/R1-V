@@ -14,12 +14,13 @@
 
 import os
 import re
+from ast import literal_eval
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 import json
-from datasets import load_dataset, load_from_disk, Dataset, Image, Value
+from datasets import load_dataset, load_from_disk, Dataset, Image, Value, Features, DatasetDict
 from PIL import Image as PILImage
 
 from transformers import Qwen2VLForConditionalGeneration
@@ -33,6 +34,9 @@ from trl import (
     TrlParser,
     get_peft_config,
 )
+
+from qwen_vl_utils import smart_resize, to_rgb 
+from qwen_vl_utils.vision_process import IMAGE_FACTOR, MIN_PIXELS, MAX_PIXELS
 
 
 @dataclass
@@ -89,10 +93,11 @@ def parse_parameter(parameter: str) -> dict:
     try:
         parameter = parameter.strip().split(":")
         key = parameter[0].strip()
-        value = eval(parameter[1].strip())
+        value = literal_eval(parameter[1].strip())
         return {key: value}
     except Exception as e:
         print(f"Error parsing parameter: {e}")
+        print(f"Parameter: {parameter}")
         return {}
 
 
@@ -246,8 +251,8 @@ def action_accuracy_reward(completions, solution, **kwargs):
                 f.write(
                     f"------------- {current_time} Accuracy reward: {reward} -------------\n"
                 )
-                f.write(f"Content: {content}\n")
-                f.write(f"Solution: {sol}\n")
+                f.write(f"========== Generation ==========\n{content}\n==========================\n")
+                f.write(f"========== GT Answer ==========\n{sol}\n==========================\n")
     return rewards
 
 
@@ -275,20 +280,17 @@ SYSTEM_PROMPT = (
 def load_dataset_from_the_disk(jsonl_file_path):
     with open(jsonl_file_path, "r", encoding="utf-8") as f:
         data = [json.loads(line) for line in f]
-
-    features = {
+    print("Loaded data sample: ", data[0])
+    features = Features({
         "image": Image(),
         "problem": Value("string"),
         "solution": Value("string"),
-    }
-
+    })
     def process_example(example):
         image_path = example["image_path"]
         try:
             # Load image using PIL
-            image = PILImage.open(image_path).convert(
-                "RGB"
-            )  # Use PILImage to avoid conflict
+            image = PILImage.open(image_path)
             return {
                 "image": image,
                 "problem": example["problem"],
@@ -297,17 +299,21 @@ def load_dataset_from_the_disk(jsonl_file_path):
         except FileNotFoundError:
             print(f"Image not found: {image_path}")
             return None  # Or handle the error as appropriate
-
-    ds = Dataset.from_list(
-        [item for item in data if item is not None], features=features
+        except Exception as e:
+            print(f"Error processing {example['image_path']}: {str(e)}")
+            return None
+    ds = Dataset.from_list(data)
+    ds = DatasetDict({
+        "train":ds.select(range(100)),
+        "test":ds.select(range(100, 200)),
+    })
+    ds = ds.map(
+        process_example,
+        remove_columns=['image_path'],  # 移除原有列
+        features=features,  # 指定新的特征结构
+        num_proc=10,
     )
-
-    processed_examples = []
-    for example in ds:
-        processed_example = process_example(example)
-        if processed_example:  # Skip None (failed) examples
-            processed_examples.append(processed_example)
-    ds = Dataset.from_list(processed_examples, features=features)  # Recreate dataset
+    ds = ds.filter(lambda x: x is not None)
     return ds
 
 
@@ -346,13 +352,32 @@ def main(script_args, training_args, model_args):
                 },
             ],
         }
+    
+      
+    def preprocess_image(example, min_pixels, max_pixels, size_factor):
+        image = to_rgb(example["image"])
+        width, height = image.size
+        min_pixels = min_pixels
+        max_pixels = max_pixels
+        resized_height, resized_width = smart_resize(
+            height,
+            width,
+            factor=size_factor,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        )
+        image = image.resize((resized_width, resized_height))
+        return {"image": image}
 
     if "image" in dataset[script_args.dataset_train_split].features:
         print("has image in dataset")
         dataset = dataset.map(
             make_conversation_image
         )  # Utilize multiprocessing for faster mapping
-
+        # dataset = dataset.map(
+        #     preprocess_image,
+        #     fn_kwargs={"min_pixels": script_args.min_pixels, "max_pixels": script_args.max_pixels, "size_factor": IMAGE_FACTOR},
+        # )   
     else:
         print("no image in dataset")
         dataset = dataset.map(make_conversation)

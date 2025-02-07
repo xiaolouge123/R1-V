@@ -48,6 +48,7 @@ from trl.trainer.utils import generate_model_card, get_comet_experiment_url
 import copy
 
 
+
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
 
@@ -228,6 +229,10 @@ class Qwen2VLGRPOTrainer(Trainer):
                 processing_class.pad_token_id = pad_token_id
                 processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
                 if "Qwen2-VL" in model_id:
+                    processing_class = AutoProcessor.from_pretrained(model_id, min_pixels=min_pixels, max_pixels=max_pixels)
+                    pad_token_id = processing_class.tokenizer.pad_token_id
+                    processing_class.pad_token_id = pad_token_id
+                    processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
                     processing_class.image_processor.max_pixels = max_pixels
                     processing_class.image_processor.min_pixels = min_pixels
             else:
@@ -336,11 +341,15 @@ class Qwen2VLGRPOTrainer(Trainer):
         if return_outputs:
             raise ValueError("The GRPOTrainer does not support returning outputs")
     
-        
+        # print('input in compute_loss', inputs[0].keys())
 
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+        # print('prompts_text in compute_loss', prompts_text[0])
         images = [x["image"] for x in inputs]
+        # print('images in compute_loss', images[0])
+        # print([img.size for img in images])
+
         prompt_inputs = self.processing_class(
             text=prompts_text,
             images=images,
@@ -356,6 +365,12 @@ class Qwen2VLGRPOTrainer(Trainer):
         if self.max_prompt_length is not None:
             prompt_inputs["input_ids"] = prompt_inputs["input_ids"][:, -self.max_prompt_length :]
             prompt_inputs["attention_mask"] = prompt_inputs["attention_mask"][:, -self.max_prompt_length :]
+
+        # print('prompt_inputs in compute_loss', prompt_inputs.keys())
+        # print(prompt_inputs["input_ids"].shape)
+        # print(prompt_inputs["attention_mask"].shape)
+        # print(prompt_inputs["pixel_values"].shape)
+        # print(prompt_inputs["image_grid_thw"].shape)
 
         # Generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
