@@ -19,6 +19,7 @@ torchrun --nproc_per_node="5" \
     --model_name_or_path $PATH_TO_MODEL \
     --dataset_name $PATH_TO_DATASET \
     --max_prompt_length 1024 \
+    --max_completion_length 512 \
     --per_device_train_batch_size 1 \
     --gradient_accumulation_steps 2 \
     --logging_steps 1 \
