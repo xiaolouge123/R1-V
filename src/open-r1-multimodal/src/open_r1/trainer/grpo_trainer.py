@@ -416,33 +416,34 @@ class Qwen2VLGRPOTrainer(Trainer):
         )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
 
-        if (
-            self.max_prompt_length is not None
-            and "Qwen2-VL" in model.config._name_or_path
-        ):
-            # 获取图像token的长度
-            image_token_len = prompt_inputs["image_grid_thw"].shape[1]
+        # 这里写的不对，要改的话，蛮多的。还是直接设置 max_prompt_length足够大吧
+        # if (
+        #     self.max_prompt_length is not None
+        #     and "Qwen2-VL" in model.config._name_or_path
+        # ):
+        #     # 获取图像token的长度
+        #     image_token_len = prompt_inputs["image_grid_thw"].shape[1]
 
-            # 只截断文本部分,保留所有图像token
-            text_length = prompt_inputs["input_ids"].size(1) - image_token_len
-            max_text_length = self.max_prompt_length - image_token_len
+        #     # 只截断文本部分,保留所有图像token
+        #     text_length = prompt_inputs["input_ids"].size(1) - image_token_len
+        #     max_text_length = self.max_prompt_length - image_token_len
 
-            if text_length > max_text_length:
-                prompt_inputs["input_ids"] = torch.cat(
-                    [
-                        prompt_inputs["input_ids"][:, :image_token_len],
-                        prompt_inputs["input_ids"][:, -(max_text_length):],
-                    ],
-                    dim=1,
-                )
-                prompt_inputs["attention_mask"] = torch.cat(
-                    [
-                        prompt_inputs["attention_mask"][:, :image_token_len],
-                        prompt_inputs["attention_mask"][:, -(max_text_length):],
-                    ],
-                    dim=1,
-                )
-        elif self.max_prompt_length is not None:
+        #     if text_length > max_text_length:
+        #         prompt_inputs["input_ids"] = torch.cat(
+        #             [
+        #                 prompt_inputs["input_ids"][:, :image_token_len],
+        #                 prompt_inputs["input_ids"][:, -(max_text_length):],
+        #             ],
+        #             dim=1,
+        #         )
+        #         prompt_inputs["attention_mask"] = torch.cat(
+        #             [
+        #                 prompt_inputs["attention_mask"][:, :image_token_len],
+        #                 prompt_inputs["attention_mask"][:, -(max_text_length):],
+        #             ],
+        #             dim=1,
+        #         )
+        if self.max_prompt_length is not None:
             # 对于非多模态模型,保持原有逻辑
             prompt_inputs["input_ids"] = prompt_inputs["input_ids"][
                 :, -self.max_prompt_length :

@@ -20,7 +20,15 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 import json
-from datasets import load_dataset, load_from_disk, Dataset, Image, Value, Features, DatasetDict
+from datasets import (
+    load_dataset,
+    load_from_disk,
+    Dataset,
+    Image,
+    Value,
+    Features,
+    DatasetDict,
+)
 from PIL import Image as PILImage
 
 from transformers import Qwen2VLForConditionalGeneration
@@ -35,7 +43,7 @@ from trl import (
     get_peft_config,
 )
 
-from qwen_vl_utils import smart_resize, to_rgb 
+from qwen_vl_utils import smart_resize, to_rgb
 from qwen_vl_utils.vision_process import IMAGE_FACTOR, MIN_PIXELS, MAX_PIXELS
 
 
@@ -251,17 +259,40 @@ def action_accuracy_reward(completions, solution, **kwargs):
                 f.write(
                     f"------------- {current_time} Accuracy reward: {reward} -------------\n"
                 )
-                f.write(f"========== Generation ==========\n{content}\n==========================\n")
-                f.write(f"========== GT Answer ==========\n{sol}\n==========================\n")
+                f.write(
+                    f"========== Generation ==========\n{content}\n==========================\n"
+                )
+                f.write(
+                    f"========== GT Answer ==========\n{sol}\n==========================\n"
+                )
     return rewards
 
 
 def format_reward(completions, **kwargs):
     """Reward function that checks if the completion has a specific format."""
     pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
+    # 检查是否只包含一个 action description 和一个 action 标签
+    action_desc_pattern = r"<action description>.*?</action description>"
+    action_pattern = r"<action>.*?</action>"
+    completion_contents = [completion[0]["content"] for completion in completions]
+    penaltys = []
+
+    for content in completion_contents:
+        # 提取answer部分
+        answer = extract_xml(content, "answer")
+        # 计数action description和action标签数量
+        action_desc_count = len(re.findall(action_desc_pattern, answer))
+        action_count = len(re.findall(action_pattern, answer))
+        if action_desc_count == 1 and action_count == 1:
+            penaltys.append(0.0)
+        else:
+            penaltys.append(-2)
+
     completion_contents = [completion[0]["content"] for completion in completions]
     matches = [re.match(pattern, content) for content in completion_contents]
-    return [1.0 if match else 0.0 for match in matches]
+    rewards = [1.0 if match else 0.0 for match in matches]
+    assert len(rewards) == len(penaltys)
+    return [r + p for r, p in zip(rewards, penaltys)]
 
 
 reward_funcs_registry = {
@@ -281,11 +312,14 @@ def load_dataset_from_the_disk(jsonl_file_path):
     with open(jsonl_file_path, "r", encoding="utf-8") as f:
         data = [json.loads(line) for line in f]
     print("Loaded data sample: ", data[0])
-    features = Features({
-        "image": Image(),
-        "problem": Value("string"),
-        "solution": Value("string"),
-    })
+    features = Features(
+        {
+            "image": Image(),
+            "problem": Value("string"),
+            "solution": Value("string"),
+        }
+    )
+
     def process_example(example):
         image_path = example["image_path"]
         try:
@@ -302,14 +336,17 @@ def load_dataset_from_the_disk(jsonl_file_path):
         except Exception as e:
             print(f"Error processing {example['image_path']}: {str(e)}")
             return None
+
     ds = Dataset.from_list(data)
-    ds = DatasetDict({
-        "train":ds.select(range(100)),
-        "test":ds.select(range(100, 200)),
-    })
+    ds = DatasetDict(
+        {
+            "train": ds.select(range(100)),
+            "test": ds.select(range(100, 200)),
+        }
+    )
     ds = ds.map(
         process_example,
-        remove_columns=['image_path'],  # 移除原有列
+        remove_columns=["image_path"],  # 移除原有列
         features=features,  # 指定新的特征结构
         num_proc=10,
     )
@@ -352,8 +389,7 @@ def main(script_args, training_args, model_args):
                 },
             ],
         }
-    
-      
+
     def preprocess_image(example, min_pixels, max_pixels, size_factor):
         image = to_rgb(example["image"])
         width, height = image.size
@@ -377,7 +413,7 @@ def main(script_args, training_args, model_args):
         # dataset = dataset.map(
         #     preprocess_image,
         #     fn_kwargs={"min_pixels": script_args.min_pixels, "max_pixels": script_args.max_pixels, "size_factor": IMAGE_FACTOR},
-        # )   
+        # )
     else:
         print("no image in dataset")
         dataset = dataset.map(make_conversation)
