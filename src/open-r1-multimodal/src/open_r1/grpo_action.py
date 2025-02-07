@@ -135,12 +135,13 @@ def extract_action(text: str) -> str:
     a well defined action contains: name, parameters, active_region
     """
     answer = extract_xml(text, "answer")
-    action = extract_xml(answer, "action name")
+    action = extract_xml(answer, "action")
+    action_name = extract_xml(action, "name")
     parameter = parse_parameter(
-        extract_xml(answer, "parameter")
+        extract_xml(action, "parameter")
     )  # TODO suppose only one parameter
     active_region = parse_parameter(extract_xml(answer, "active region"))
-    return action, parameter, active_region
+    return action_name, parameter, active_region
 
 
 def point_in_region(point: Tuple[int, int], region: Tuple[int, int, int, int]) -> bool:
@@ -174,11 +175,16 @@ def eval_action(gt_action, gt_parameter, gt_active_region, action, parameter) ->
 
     if gt_action != action:
         return 0.0
+
     if gt_action == "TAP":
         point = parameter.get("point", None)
         if point is None:
             return 0.0
-        if point_in_region(point, gt_active_region):
+        if (
+            isinstance(point, list[int])
+            and isinstance(gt_active_region, list[int])
+            and point_in_region(point, gt_active_region)
+        ):
             return 1.0
         else:
             return 0.0
@@ -189,6 +195,7 @@ def eval_action(gt_action, gt_parameter, gt_active_region, action, parameter) ->
             return 1.0
         else:
             return 0.0
+
     elif gt_action == "TYPE":
         text = parameter.get("text", None)
         gt_text = gt_parameter.get("text", None)
@@ -234,14 +241,13 @@ def eval_action(gt_action, gt_parameter, gt_active_region, action, parameter) ->
         return 0.0
 
 
-def action_accuracy_reward(completions, solution, **kwargs):
+def action_accuracy_reward(completions, solutions, **kwargs):
     """Reward function that checks if the completion is correct using either symbolic verification or exact string matching."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
-    current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
-    for content, sol in zip(contents, solution):
-        gt_action, gt_parameter, gt_active_region = extract_action(content)
-        action, parameter, _ = extract_action(sol)
+    for content, sol in zip(contents, solutions):
+        gt_action, gt_parameter, gt_active_region = extract_action(sol)
+        action, parameter, _ = extract_action(content)
         if gt_action:
             # gt 有可解析的action
             reward = eval_action(
@@ -253,11 +259,12 @@ def action_accuracy_reward(completions, solution, **kwargs):
         rewards.append(reward)
 
         if os.getenv("DEBUG_MODE") == "true":
+            current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
             log_path = os.getenv("LOG_PATH")
             # local_rank = int(os.getenv("LOCAL_RANK", 0))
             with open(log_path, "a") as f:
                 f.write(
-                    f"------------- {current_time} Accuracy reward: {reward} -------------\n"
+                    f"------------- {current_time} Action Accuracy reward: {reward} -------------\n"
                 )
                 f.write(
                     f"========== Generation ==========\n{content}\n==========================\n"
@@ -292,6 +299,19 @@ def format_reward(completions, **kwargs):
     matches = [re.match(pattern, content) for content in completion_contents]
     rewards = [1.0 if match else 0.0 for match in matches]
     assert len(rewards) == len(penaltys)
+
+    if os.getenv("DEBUG_MODE") == "true":
+        current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
+        log_path = os.getenv("LOG_PATH")
+        # local_rank = int(os.getenv("LOCAL_RANK", 0))
+        for content, reward, penalty in zip(completion_contents, rewards, penaltys):
+            with open(log_path, "a") as f:
+                f.write(
+                    f"------------- {current_time} Format Accuracy reward: {reward} penalty: {penalty}, total: {reward + penalty} -------------\n"
+                )
+                f.write(
+                    f"========== Generation ==========\n{content}\n==========================\n"
+                )
     return [r + p for r, p in zip(rewards, penaltys)]
 
 
