@@ -18,6 +18,7 @@ from ast import literal_eval
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
+import random
 
 import json
 from datasets import (
@@ -99,10 +100,16 @@ def parse_parameter(parameter: str) -> dict:
     'text: Click to manage account information.' -> {'text': 'Click to manage account information.'}
     """
     try:
-        parameter = parameter.strip().split(":")
-        key = parameter[0].strip()
-        value = literal_eval(parameter[1].strip())
-        return {key: value}
+        if ":" in parameter:
+            parameter = parameter.strip().split(":", 1)
+            key = parameter[0].strip()
+            if key in ['point', 'region']:
+                value = literal_eval(parameter[1].strip())
+            else:
+                value = parameter[1].strip()
+            return {key: value}
+        else:
+            return {}
     except Exception as e:
         print(f"Error parsing parameter: {e}")
         print(f"Parameter: {parameter}")
@@ -134,13 +141,13 @@ def extract_action(text: str) -> str:
 
     a well defined action contains: name, parameters, active_region
     """
-    answer = extract_xml(text, "answer")
-    action = extract_xml(answer, "action")
-    action_name = extract_xml(action, "name")
+    answer = extract_xml(text, "answer").strip()
+    action = extract_xml(answer, "action").strip()
+    action_name = extract_xml(action, "name").strip()
     parameter = parse_parameter(
-        extract_xml(action, "parameter")
+        extract_xml(action, "parameter").strip()
     )  # TODO suppose only one parameter
-    active_region = parse_parameter(extract_xml(answer, "active region"))
+    active_region = parse_parameter(extract_xml(answer, "active region").strip())
     return action_name, parameter, active_region
 
 
@@ -173,79 +180,74 @@ def eval_action(gt_action, gt_parameter, gt_active_region, action, parameter) ->
                     dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
         return dp[m][n]
 
-    if gt_action != action:
-        return 0.0
+    reward = 0.0
 
+    if gt_action != action:
+        return reward # 动作不一致，奖励为0
+    
+    reward += 0.5 # 动作一致，奖励0.5
+    
     if gt_action == "TAP":
         point = parameter.get("point", None)
-        if point is None:
-            return 0.0
         if (
-            isinstance(point, list[int])
-            and isinstance(gt_active_region, list[int])
-            and point_in_region(point, gt_active_region)
+            isinstance(point, list)
+            and isinstance(gt_active_region, list)
         ):
-            return 1.0
-        else:
-            return 0.0
+            reward += 0.5 # 参数类型正确，奖励0.5
+            if point_in_region(point, gt_active_region):
+                reward += 1 # 点在区域内，奖励0.5
+    
     elif gt_action == "SWIPE":
         direction = parameter.get("direction", None)
         gt_direction = gt_parameter.get("direction", None)
-        if direction == gt_direction and direction is not None:
-            return 1.0
-        else:
-            return 0.0
+        if direction is not None and direction in ["up", "down", "left", "right"]:
+            reward += 0.5 # 参数类型正确，奖励0.5
+            if direction == gt_direction:
+                reward += 0.5 # 方向一致，奖励0.5
 
     elif gt_action == "TYPE":
         text = parameter.get("text", None)
         gt_text = gt_parameter.get("text", None)
         if text is not None:
+            reward += 0.5 # 参数类型正确，奖励0.5
             # 比较内容是否相似，lcs > 50% 则认为相似
             if lcs(text, gt_text) / min(len(text), len(gt_text)) > 0.5:
-                return 1.0
-            else:
-                return 0.0
-        else:
-            return 0.0
+                reward += 0.5 # 内容相似，奖励0.5
+
     elif gt_action == "TASK_COMPLETE":
         if action == "TASK_COMPLETE" and parameter == {}:
-            return 1.0
-        else:
-            return 0.0
+            reward += 0.5 # 动作一致，奖励0.5
+    
     elif gt_action == "PRESS_ENTER":
         if action == "PRESS_ENTER" and parameter == {}:
-            return 1.0
-        else:
-            return 0.0
+            reward += 0.5 # 动作一致，奖励0.5
+        
     elif gt_action == "TASK_IMPOSSIBLE":
         if action == "TASK_IMPOSSIBLE" and parameter == {}:
-            return 1.0
-        else:
-            return 0.0
+            reward += 0.5 # 动作一致，奖励0.5
+        
     elif gt_action == "PRESS_BACK":
         if action == "PRESS_BACK" and parameter == {}:
-            return 1.0
-        else:
-            return 0.0
+            reward += 0.5 # 动作一致，奖励0.5
+        
     elif gt_action == "PRESS_HOME":
         if action == "PRESS_HOME" and parameter == {}:
-            return 1.0
-        else:
-            return 0.0
+            reward += 0.5 # 动作一致，奖励0.5
+        
     elif gt_action == "WAIT":
         if action == "WAIT" and parameter == {}:
-            return 1.0
-        else:
-            return 0.0
+            reward += 0.5 # 动作一致，奖励0.5
     else:
-        return 0.0
+        reward += 0.0 # 动作不一致，奖励为0
+
+    return reward
 
 
-def action_accuracy_reward(completions, solutions, **kwargs):
+def action_accuracy_reward(completions, solution, **kwargs):
     """Reward function that checks if the completion is correct using either symbolic verification or exact string matching."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
-    for content, sol in zip(contents, solutions):
+    for content, sol in zip(contents, solution):
         gt_action, gt_parameter, gt_active_region = extract_action(sol)
         action, parameter, _ = extract_action(content)
         if gt_action:
@@ -264,7 +266,7 @@ def action_accuracy_reward(completions, solutions, **kwargs):
             # local_rank = int(os.getenv("LOCAL_RANK", 0))
             with open(log_path, "a") as f:
                 f.write(
-                    f"------------- {current_time} Action Accuracy reward: {reward} -------------\n"
+                     f"------------- {current_time} Action Accuracy reward: {reward} -------------\n"
                 )
                 f.write(
                     f"========== Generation ==========\n{content}\n==========================\n"
@@ -277,7 +279,7 @@ def action_accuracy_reward(completions, solutions, **kwargs):
 
 def format_reward(completions, **kwargs):
     """Reward function that checks if the completion has a specific format."""
-    pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
+    pattern = r"\s*<think>.*?</think>\s*<answer>.*?</answer>\s*"
     # 检查是否只包含一个 action description 和一个 action 标签
     action_desc_pattern = r"<action description>.*?</action description>"
     action_pattern = r"<action>.*?</action>"
@@ -288,15 +290,15 @@ def format_reward(completions, **kwargs):
         # 提取answer部分
         answer = extract_xml(content, "answer")
         # 计数action description和action标签数量
-        action_desc_count = len(re.findall(action_desc_pattern, answer))
-        action_count = len(re.findall(action_pattern, answer))
-        if action_desc_count == 1 and action_count == 1:
-            penaltys.append(0.0)
+        action_desc_count = len(re.findall(action_desc_pattern, answer, re.DOTALL))
+        action_count = len(re.findall(action_pattern, answer, re.DOTALL))
+        if action_count == 1:
+            penaltys.append(1.0)
         else:
-            penaltys.append(-2)
+            penaltys.append(0.0)
 
     completion_contents = [completion[0]["content"] for completion in completions]
-    matches = [re.match(pattern, content) for content in completion_contents]
+    matches = [re.match(pattern, content, re.DOTALL) for content in completion_contents]
     rewards = [1.0 if match else 0.0 for match in matches]
     assert len(rewards) == len(penaltys)
 
@@ -332,6 +334,11 @@ def load_dataset_from_the_disk(jsonl_file_path):
     with open(jsonl_file_path, "r", encoding="utf-8") as f:
         data = [json.loads(line) for line in f]
     print("Loaded data sample: ", data[0])
+    print(f"Before filter, data length: {len(data)}")
+    lentgh_limit = 3300
+    data = [d for d in data if len(d["problem"]) < lentgh_limit]
+    print(f"After filter, data length: {len(data)}")
+    
     features = Features(
         {
             "image": Image(),
@@ -358,11 +365,19 @@ def load_dataset_from_the_disk(jsonl_file_path):
             return None
 
     ds = Dataset.from_list(data)
+    idx = [x for x in range(len(ds))]
+    seed = 42
+    random.seed(seed)
+    random.shuffle(idx)
     ds = DatasetDict(
         {
-            "train": ds.select(range(100)),
-            "test": ds.select(range(100, 200)),
+            "train": ds.select(idx[:20000]),
+            "test": ds.select(idx[20000:21000]),
         }
+        # {
+        #     "train": ds.select(idx[:400]),
+        #     "test": ds.select(idx[400:410]),
+        # }
     )
     ds = ds.map(
         process_example,
